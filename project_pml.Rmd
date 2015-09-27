@@ -1,0 +1,163 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Antonio René Hernández"
+output: html_document
+---
+```{r setOptions, warning=FALSE,message=FALSE, echo = FALSE}
+
+library(knitr)
+library(caret)
+library(randomForest)
+# opts_chunk$set(cache = TRUE)
+
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+```
+
+# Summary
+
+Data from observations obtained with wearable devices of weight lifting exercising activity was used to build a predictive model for assesing the quality of the weight lifting exercise.  A random model was fit to a sample to train the model and applied to another sample to find the accuracy, which was estimated to be in a 95% confidence interval between 97.3% and 98.24%.  Predictions of quality of exercising were made for a set of 20 observations.  
+
+
+# Getting and Cleaning Data
+
+The original data used comes from the [Weight Lifting Exercises Dataset](http://groupware.les.inf.puc-rio.br/static/WLE/WearableComputing_weight_lifting_exercises_biceps_curl_variations.csv) provided by Velloso et all (2013).  The instructors of PML provided to samples, a training and a testing datasets with respectively 19,622 and 20 observations of 160 variables.  
+
+First step is reading the data:
+
+```{r gettingData}
+pml_training = read.csv("pml-training.csv", na.strings = c("NA","#DIV/0!"))
+training_names = names(pml_training)
+pml_testing = read.csv("pml-testing.csv", na.strings = c("NA","#DIV/0!"), col.names = training_names)
+```
+
+Due that there are 160 variables and missing data, and that the objective of the project is to make predictions on the testing dataset, the following strategy to clean the data is chosen:
+
+1. Analize variables and observations in the testing dataset for missing values and inconsistent data.
+2. Choose variables in the testing dataset to be used in the analysis.
+3. Subset these variables in the training dataset.
+4. Analize the subset dataset for missing values and inconsistent data and clean variables and observations as needed.
+
+First, when graphing the number of missing values it can be seen that there is certain number of variables that have missing values in all observations.
+
+```{r }
+plot(colSums(is.na(pml_testing)), ylab="Count of Missing Values", main = "Missing Values per Column in the Testing Dataset")
+```
+
+In this way, 100 variables were discarded.  Both the testing and training sets are subset to the remainder 60 variables,
+
+
+```{r subset1}
+pml_training = pml_training[,colSums(is.na(pml_testing))<20]
+pml_testing = pml_testing[,colSums(is.na(pml_testing))<20]
+```
+
+Further analysis in the training dataset show no inconsistent data.  Even though, the first 7 variables (`r names(pml_testing)[1:7]`) are not going to be used in further analysis.
+
+# Training and Test Samples for modelling
+
+The provided training set is divided in two samples, a training sample and a test sample, with 80% and 20% of the original data set.
+
+```{r train_test}
+set.seed(1235)
+inTrain = createDataPartition(y = pml_training$classe, p = 0.80, list = FALSE)
+training = pml_training[inTrain,]               # training sample 
+testing = pml_training[-inTrain,]               # testing sample
+```
+
+# Pre-processing
+
+## Standardizing the training sample
+
+When plotting the mean and standard deviation of each variable, it can be seen that there are several variables in diferent scales.  A plot of the absolute value of the [coefficient of variation (CV)](https://en.wikipedia.org/wiki/Coefficient_of_variation) is shown in the 10-base logarithm scale to show the relative variability in the variables ranges in different scales. 
+
+```{r meansSds}
+
+plot(log(abs(sqrt(colSums((training[,-c(1:7,60)] - colMeans(training[,-c(1:7,60)]))^2)/(nrow(training)-1))/colMeans(training[,-c(1:7,60)]))),
+     ylab = "Coefficient of Variation", xlab = "Column", 
+     main = "Coefficients of Variation (log10 of absolute value)")
+
+```
+
+It is considered that the variability can be reduced by centering and scaling (standardizing) the data.
+
+## Identifying Correlated Predictors
+
+The following variables: 
+```{r correlatedPredictors}
+names(training[,-c(1:7,60)][,findCorrelation(cor(training[,-c(1:7,60)]), cutoff = 0.75)])
+```
+have at least a correlation greater than 0.75 with at least one of this group.
+
+This means that there some pre-processing to eliminate redundant variables is needed.  Principal component analysis (PCA) was chosen as method to reduce the number of variables used in the modeling.
+
+## Using preProcess function
+
+The preProcess function is applied to standardize the training sample.
+
+```{r preProcess1}
+preTrain = preProcess(training[,-c(1:7,60)], method = c("center", "scale", "pca"))
+```
+
+Also, a principal component analysis was run on the training sample, which determined that `r preTrain$numComp` components to capture `r paste(preTrain$thresh*100,"%", sep = "")` of the variance.
+
+This pre-processing features are applied to the training and testing samples.
+
+```{r preProcess2}
+trainingPC = predict(preTrain, training[,-c(1:7,60)])
+testPC = predict(preTrain, testing[,-c(1:7,60)])
+```
+
+
+# Modeling with Random Forests
+
+## Random Forests Model Results
+
+A random forests model was applied to the training sample.  Results are shown below.
+
+```{r randomForestModel}
+rfFit = randomForest(training$classe ~., data = trainingPC)
+rfFit
+```
+
+### Cross-Validation
+
+Applying the model to the testing sample, the following confusion matrix and statistics was obtained.
+
+```{r confusionMatrixRF}
+cfMatRF = confusionMatrix(testing$classe, predict(rfFit, testPC))
+cfMatRF
+```
+As it can be seen, the accuracy is in a 95% confidence between `r paste(formatC(as.numeric(cfMatRF$overall[3])*100, digits = 3),"%",sep = "")` and `r paste(formatC(as.numeric(cfMatRF$overall[4])*100, digits = 4),"%",sep = "")` .
+
+# Applying the results to the pml_testing dataset
+
+The predicted values for the pml_testing dataset are shown below.
+
+```{r predictValues}
+
+pmlTestPC = predict(preTrain, pml_testing[,-c(1:7,60)])
+
+predTest = predict(rfFit, pmlTestPC)
+predTest
+
+```
+```{r savefiles, echo=FALSE}
+
+answers = as.character(predTest)
+
+pml_write_files(answers)
+
+```
+
+
+
+# References
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. [Qualitative Activity Recognition of Weight Lifting Exercises](http://groupware.les.inf.puc-rio.br/work.jsf?p1=11201). Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
